@@ -1,0 +1,338 @@
+<!doctype html><html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TR-Omni-E4B</title>
+<style>
+:root{--bg1:#eef5f6;--bg2:#d8e7ea;--fg:#23434b;--mut:#5f7f86;--chip:#ffffffb3;--chipbd:#ffffffe0;--glow:#7fc3c9;--shadow:#3a646c33}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg1:#0d1b1f;--bg2:#08262b;--fg:#d9eef0;--mut:#86a9ae;--chip:#12303566;--chipbd:#2a5158;--glow:#4fa7ae;--shadow:#00000066}}
+:root[data-theme=dark]{--bg1:#0d1b1f;--bg2:#08262b;--fg:#d9eef0;--mut:#86a9ae;--chip:#12303566;--chipbd:#2a5158;--glow:#4fa7ae;--shadow:#00000066}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;overflow:hidden;color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
+ background:radial-gradient(120% 90% at 50% 38%,var(--bg1) 0%,var(--bg2) 100%)}
+.top{position:fixed;inset:0 0 auto 0;display:flex;justify-content:space-between;align-items:center;padding:16px 20px;z-index:3;gap:10px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:.2px;font-size:15px;white-space:nowrap}
+.brand small{display:block;font-weight:500;color:var(--mut);font-size:11px;letter-spacing:.6px;text-transform:uppercase}
+.ctl{display:flex;gap:8px;align-items:center}
+.ctl select,.ctl button{height:34px;border-radius:12px;border:1px solid var(--chipbd);background:var(--chip);color:var(--fg);font:inherit;font-size:13px;
+ padding:0 11px;cursor:pointer;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.ctl button{min-width:34px;padding:0 10px}.ctl button[aria-pressed=false]{opacity:.55}
+.stage{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:80px 16px 40px}
+.orb{--s:clamp(210px,44vmin,430px);width:var(--s);height:var(--s);border-radius:50%;border:0;padding:0;background:none;cursor:pointer;position:relative;
+ outline:none;transition:transform .5s cubic-bezier(.2,.8,.2,1);-webkit-tap-highlight-color:transparent}
+.orb canvas{width:100%;height:100%;display:block;border-radius:50%;filter:drop-shadow(0 18px 38px var(--shadow))}
+.orb .halo{position:absolute;inset:-9%;border-radius:50%;pointer-events:none;opacity:0;
+ background:radial-gradient(closest-side,transparent 80%,color-mix(in srgb,var(--glow) 70%,transparent) 91%,transparent 100%);transition:opacity .35s}
+.orb:focus-visible{box-shadow:0 0 0 3px var(--glow)}
+.status{min-height:24px;font-size:17px;font-weight:500;letter-spacing:.2px;color:var(--fg);text-align:center;transition:opacity .3s}
+.status .sub{display:block;font-size:12.5px;font-weight:400;color:var(--mut);margin-top:2px}
+.tone{height:22px;font-size:12px;color:var(--mut);letter-spacing:.4px;opacity:0;transition:opacity .4s}.tone.on{opacity:1}
+.captions{width:min(680px,92vw);min-height:78px;text-align:center;transition:opacity .3s}
+.captions p{margin:4px 0;font-size:16px;line-height:1.45}.captions .u{color:var(--mut);font-size:14px}
+.captions.off{opacity:0}
+.info{position:fixed;left:0;right:0;bottom:10px;text-align:center;font-size:11.5px;color:var(--mut);opacity:.8;padding:0 16px}
+@media (max-width:560px){.brand small{display:none}.ctl select{max-width:130px}.captions p{font-size:15px}}
+@media (prefers-reduced-motion:reduce){.orb{transition:none}}
+</style></head><body>
+<header class="top">
+ <div class="brand"><span>TR-Omni-E4B<small>Türkçe native speech-to-speech</small></span></div>
+ <div class="ctl">
+  <select id="mode" aria-label="Mod"></select>
+  <button id="reset" title="Yeni sohbet" aria-label="Yeni sohbet">↺</button>
+  <button id="capBtn" title="Yazıları göster / gizle" aria-pressed="true">Aa</button>
+ </div>
+</header>
+<main class="stage">
+ <button id="orb" class="orb" aria-label="Sohbeti başlat"><canvas id="gl"></canvas><span class="halo" id="halo"></span></button>
+ <div class="status" id="status">Başlamak için küreye dokunun<span class="sub">Sonra doğal şekilde konuşun; susunca cevap verir.</span></div>
+ <div class="tone" id="tone"></div>
+ <section class="captions" id="cap"><p class="u" id="capU"></p><p id="capB"></p></section>
+</main>
+<footer class="info" id="info"></footer>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/bundle.min.js"></script>
+<script>
+const MODES = %MODES%;
+const $ = id => document.getElementById(id);
+const statusEl = $("status"), toneEl = $("tone"), capU = $("capU"), capB = $("capB"), modeSel = $("mode");
+for (const [k, v] of Object.entries(MODES)) { const o = document.createElement("option"); o.value = k; o.textContent = v; modeSel.appendChild(o); }
+const wanted = new URLSearchParams(location.search).get("mode");
+if (wanted && MODES[wanted]) modeSel.value = wanted;
+fetch("/api/info").then(r => r.json()).then(j => {
+  const v = j.voice && j.voice.model ? j.voice.model : "ses servisi yok";
+  $("info").textContent = `anlama: ${j.thinker} · konuşma: ${v}`;
+}).catch(() => {});
+function setStatus(main, sub) { statusEl.innerHTML = ""; statusEl.append(main); if (sub) { const s = document.createElement("span"); s.className = "sub"; s.textContent = sub; statusEl.append(s); } }
+
+/* ---------------- orb: the assistant orb (WebGL, flowing wisps), driven by the voices ---------------- */
+const orb = {state: "idle", mic: 0, out: 0, motion: 0, beat: 0, phase: 0};
+(function orbInit() {
+  const cv = $("gl"), gl = cv.getContext("webgl", {alpha: true, premultipliedAlpha: false, antialias: true});
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)");
+  if (!gl) { cv.style.background = "url(/static/assistant-orb.webp) center/119% no-repeat"; return; }
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, "attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}"));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `precision highp float;
+uniform vec2 res;uniform float t,motion,beat,level,listen;uniform sampler2D material;
+float hash(vec3 p){p=fract(p*.3183099+vec3(.1,.2,.3));p*=17.;return fract(p.x*p.y*p.z*(p.x+p.y+p.z));}
+float noise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(mix(hash(i),hash(i+vec3(1,0,0)),f.x),mix(hash(i+vec3(0,1,0)),hash(i+vec3(1,1,0)),f.x),f.y),mix(mix(hash(i+vec3(0,0,1)),hash(i+vec3(1,0,1)),f.x),mix(hash(i+vec3(0,1,1)),hash(i+vec3(1,1,1)),f.x),f.y),f.z);}
+float fbm(vec3 p){float v=0.,a=.55;for(int i=0;i<4;i++){v+=a*noise(p);p=p*2.02+vec3(3.1,1.7,5.2);a*=.48;}return v;}
+float h2(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+void main(){
+ vec2 p=gl_FragCoord.xy/res*2.-1.;
+ float a=atan(p.y,p.x);
+ // the rim undulates with the voices: the user's (listen) softly, the assistant's (level) more
+ float wob=(.030*level+.016*listen)*(.6*sin(a*3.+t*2.1)+.4*sin(a*5.-t*2.9+1.3));
+ float r=length(p)/(.955+wob);
+ if(r>1.){gl_FragColor=vec4(0);return;}
+ float envelope=1.-smoothstep(.60,1.,r);
+ vec3 q=vec3(p*2.1,t*.48);
+ vec2 curl=vec2(fbm(q+vec3(0.,t*.19,0.)),fbm(q+vec3(4.7,0.,t*.13)))-.48;
+ vec2 waves=vec2(sin(p.y*4.8+t*1.8),cos(p.x*5.2-t*1.5));
+ // inner tremor follows the assistant's voice (beat = its envelope), a softer one the user's
+ vec2 tremor=(motion*.009+beat*.028+listen*.010)*vec2(sin(t*23.7),sin(t*29.3+1.));
+ vec2 flow=(curl*.72+waves*.075)*envelope;
+ vec2 uv=(p*(1.-.06*level)+flow+tremor*envelope)*.42+.5;
+ vec3 color=texture2D(material,clamp(uv,.01,.99)).rgb;
+ // dust: drifting motes inside the glass, brighter while someone speaks
+ vec2 g=(p+vec2(t*.013,-t*.021))*6.5;vec2 id=floor(g),f=fract(g)-.5;
+ vec2 o=vec2(h2(id),h2(id+7.3))-.5;float d=length(f-o*.7);
+ float tw=.5+.5*sin(t*(1.5+3.*h2(id+3.1))+6.28*h2(id+1.7));
+ float mote=smoothstep(.075,0.,d)*tw*step(.72,h2(id+11.))*envelope;
+ color+=vec3(.92,1.,.97)*mote*(.18+.55*max(level,listen*.7));
+ color+=vec3(1.)*.05*smoothstep(.78,1.,r);               // glass rim
+ gl_FragColor=vec4(color,1.-smoothstep(.985,1.,r));
+}`));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const U = n => gl.getUniformLocation(prog, n), uRes = U("res"), uT = U("t"), uM = U("motion"), uB = U("beat"), uL = U("level"), uLi = U("listen");
+  const tex = gl.createTexture(), img = new Image();
+  let ready = false;
+  img.onload = () => { gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+    for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]])
+      gl.texParameteri(gl.TEXTURE_2D, k, v);
+    ready = true; };
+  img.src = "/static/assistant-orb.webp";
+  function size() { const d = Math.min(devicePixelRatio || 1, 2), w = Math.round(cv.clientWidth * d);
+    if (cv.width !== w) { cv.width = cv.height = w; gl.viewport(0, 0, w, w); } }
+  let last = 0;
+  const halo = $("halo"), orbEl = $("orb");
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = last ? Math.min((now - last) / 1000, .1) : 0; last = now;
+    levels();
+    const target = {idle: .05, listen: .22, user: .45, think: .75, speak: .55}[orb.state] ?? .1;
+    orb.motion += (target + orb.out * .6 - orb.motion) * (1 - Math.exp(-dt * 5));
+    orb.beat += (orb.out - orb.beat) * (1 - Math.exp(-dt * (orb.out > orb.beat ? 30 : 8)));
+    if (!reduced.matches) orb.phase += dt * (.10 + orb.motion * 2.4 + orb.beat * 1.5);
+    const micShow = orb.state === "speak" ? 0 : orb.mic;
+    orbEl.style.transform = `scale(${1 + micShow * .05 + orb.beat * .025})`;
+    halo.style.opacity = (orb.state === "user" || micShow > .05) ? Math.min(.85, .2 + micShow * 1.3) : (orb.state === "think" ? .3 : 0);
+    if (!ready) return;
+    size();
+    gl.uniform2f(uRes, cv.width, cv.height); gl.uniform1f(uT, orb.phase); gl.uniform1f(uM, orb.motion);
+    gl.uniform1f(uB, reduced.matches ? 0 : orb.beat); gl.uniform1f(uL, reduced.matches ? 0 : orb.out); gl.uniform1f(uLi, reduced.matches ? 0 : micShow);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  requestAnimationFrame(frame);
+})();
+
+/* ---------------- audio: playback with a level meter, microphone level ---------------- */
+let actx = null, outGain = null, outAn = null, micAn = null, micBuf = null, outBuf = null;
+let outEl = null, loopPcs = null, aecLoop = false;
+function audioInit() {
+  if (actx) return;
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  outGain = actx.createGain(); outAn = actx.createAnalyser(); outAn.fftSize = 1024;
+  outGain.connect(outAn); outBuf = new Float32Array(outAn.fftSize);
+}
+// The voice reaches the speakers through a local WebRTC loopback into an <audio> element. Chrome's echo canceller
+// takes only <audio> / WebRTC playback as its reference: audio played straight from Web Audio would reach the
+// microphone uncancelled, and the model would take its own voice for the user and interrupt itself.
+function opusHiFi(sdp) {                           // the loopback carries the voice: ask for 128 kb/s Opus
+  const m = sdp.match(/a=rtpmap:(\d+) opus\/48000/i);
+  return m ? sdp.replace(new RegExp(`a=fmtp:${m[1]} ([^\\r\\n]*)`), `a=fmtp:${m[1]} $1;maxaveragebitrate=128000;stereo=0`) : sdp;
+}
+async function outputInit() {
+  if (outEl) return;
+  outEl = new Audio(); outEl.autoplay = true;
+  try {
+    const dest = actx.createMediaStreamDestination(); outAn.connect(dest);
+    const pc1 = new RTCPeerConnection(), pc2 = new RTCPeerConnection();
+    pc1.onicecandidate = e => { if (e.candidate) pc2.addIceCandidate(e.candidate); };
+    pc2.onicecandidate = e => { if (e.candidate) pc1.addIceCandidate(e.candidate); };
+    const got = new Promise((res, rej) => { pc2.ontrack = e => {
+                                              try { e.receiver.jitterBufferTarget = 0; } catch (_) {}   // ms; no network here
+                                              res(e.streams[0] || new MediaStream([e.track])); };
+                                            setTimeout(() => rej(new Error("loopback timeout")), 4000); });
+    for (const t of dest.stream.getAudioTracks()) pc1.addTrack(t, dest.stream);
+    const offer = await pc1.createOffer(); await pc1.setLocalDescription(offer); await pc2.setRemoteDescription(offer);
+    const answer = await pc2.createAnswer(); answer.sdp = opusHiFi(answer.sdp);
+    await pc2.setLocalDescription(answer); await pc1.setRemoteDescription(answer);
+    outEl.srcObject = await got; await outEl.play();
+    loopPcs = [pc1, pc2, dest]; aecLoop = true;     // references kept: a collected node would go silent
+  } catch (e) {                                     // no loopback: plain playback, and no interruptions
+    console.warn("echo-cancelled playback unavailable:", e);
+    try { outAn.disconnect(); } catch (_) {}
+    outAn.connect(actx.destination); aecLoop = false;
+  }
+}
+function rms(an, buf) { an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; return Math.sqrt(s / buf.length); }
+function levels() {
+  if (outAn) { const v = Math.min(1, rms(outAn, outBuf) * 5.5); orb.out += (v - orb.out) * (v > orb.out ? .5 : .12); }
+  if (micAn) { const v = Math.min(1, Math.max(0, rms(micAn, micBuf) * 9 - .02)); orb.mic += (v - orb.mic) * (v > orb.mic ? .45 : .1); }
+}
+
+/* ---------------- conversation ---------------- */
+let ws = null, vadInst = null, micStream = null, running = false;
+let sources = [], nextT = 0, sr = 48000, speaking = false, turnDone = true, dropAudio = false, curTurn = 0;
+let bcUntil = 0, bcDur = 0, pendingCaption = null, capList = [];
+// Interruptions (barge-in) while the voice plays, as LiveKit / Pipecat do it: the voice ducks as soon as the user
+// really seems to speak, and stops only after a sustained stretch of speech; a short "hı hı" or a noise lets it go
+// on at full volume. Speech must also stand above the residual echo the microphone hears while nobody talks.
+const BARGE = {p: 0.85, duckMs: 200, confirmMs: 650, gapMs: 260, frameMs: 32};
+let bargeMs = 0, bargeGap = 0, ducked = false, echoFloor = 0;
+function duck(on) { if (outGain) outGain.gain.setTargetAtTime(on ? .25 : 1, actx.currentTime, .04); }
+function send(o) { if (ws && ws.readyState === 1) ws.send(o instanceof ArrayBuffer ? o : JSON.stringify(o)); }
+
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => send({type: "mode", mode: modeSel.value});
+  ws.onclose = () => { setTimeout(connect, 1500); if (running) setStatus("Bağlantı koptu", "yeniden bağlanıyor…"); };
+  ws.onmessage = ev => {
+    if (typeof ev.data !== "string") { if (!dropAudio) play(new Int16Array(ev.data)); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === "turn_start") {
+      curTurn = m.turn; dropAudio = false; turnDone = false; capB.textContent = ""; capList = []; pendingCaption = null; toneEl.classList.remove("on");
+      orb.state = "think"; setStatus("Düşünüyor…");
+    } else if (m.type === "text" && m.turn === curTurn) {
+      // written text runs ahead of the voice (the thinker writes, the talker then speaks): shown in step with it
+    } else if (m.type === "say" && m.turn === curTurn) {
+      pendingCaption = m.text;
+    } else if (m.type === "transcript" && m.turn === curTurn) {
+      capU.textContent = "“" + m.text + "”";
+    } else if (m.type === "tone" && m.turn === curTurn) {
+      toneEl.textContent = "ton · " + m.tone; toneEl.classList.add("on");
+    } else if (m.type === "audio_meta" && m.turn === curTurn) {
+      sr = m.sr;
+    } else if (m.type === "turn_done" && m.turn === curTurn) {
+      turnDone = true; maybeIdle();
+    } else if (m.type === "hold") {                 // the user seems not done: keep listening
+      if (running && !speaking) { orb.state = "listen"; setStatus("Dinliyorum…", "devam edin"); }
+    } else if (m.type === "bc") {                   // a short "hı hı" while the user pauses
+      playBackchannel(m);
+    } else if (m.type === "error") {
+      setStatus("Bir sorun oldu", m.error.slice(0, 120));
+    }
+  };
+}
+
+function toFloat(i16) { const f = new Float32Array(i16.length); for (let i = 0; i < i16.length; i++) f[i] = i16[i] / 32768; return f; }
+function play(i16) {
+  if (!actx) return;
+  const f = toFloat(i16), b = actx.createBuffer(1, f.length, sr); b.copyToChannel(f, 0);
+  const s = actx.createBufferSource(); s.buffer = b; s.connect(outGain);
+  const t = Math.max(actx.currentTime + (sources.length ? 0.02 : 0.05), nextT);
+  s.start(t); nextT = t + b.duration; sources.push(s);
+  if (pendingCaption !== null) {                    // a new sentence starts with this chunk: caption it then
+    const text = pendingCaption, turn = curTurn; pendingCaption = null;
+    setTimeout(() => { if (turn === curTurn && !dropAudio) { capList.push(text); capB.textContent = capList.slice(-2).join(" "); } },
+               Math.max(0, (t - actx.currentTime) * 1000));
+  }
+  s.onended = () => { sources = sources.filter(x => x !== s); maybeIdle(); };
+  if (!speaking) { speaking = true; bargeMs = bargeGap = 0; ducked = false; orb.state = "speak";
+    setStatus("Konuşuyor…", aecLoop ? "sözümü kesebilirsiniz" : "");
+    if (vadInst && !aecLoop) vadInst.pause(); }     // without echo cancellation the microphone rests while it speaks
+}
+function bargeFrame(p) {                          // one VAD frame (32 ms) while the voice plays
+  const mic = micAn ? rms(micAn, micBuf) : 0;
+  if (p < 0.5) echoFloor = echoFloor ? echoFloor * 0.95 + mic * 0.05 : mic;   // what the mic hears when nobody talks
+  const clear = mic > Math.max(0.004, echoFloor * 2.2);                        // ~7 dB above that floor
+  if (p >= BARGE.p && clear) { bargeMs += BARGE.frameMs; bargeGap = 0; }
+  else if (bargeMs > 0 && (bargeGap += BARGE.frameMs) > BARGE.gapMs) {         // it stopped: a false alarm
+    bargeMs = bargeGap = 0; if (ducked) { duck(false); ducked = false; }
+  }
+  if (!ducked && bargeMs >= BARGE.duckMs) { duck(true); ducked = true; }
+  if (bargeMs >= BARGE.confirmMs) bargeIn();
+}
+function bargeIn() {                              // the user took the floor: stop, and tell the server what was heard
+  bargeMs = bargeGap = 0; ducked = false;
+  dropAudio = true; stopAudio(); duck(false);
+  send({type: "barge", heard: capList.length});
+  turnDone = true; speaking = false; orb.state = "user"; setStatus("Dinliyorum…", "devam edin");
+}
+function playBackchannel(m) {
+  if (!actx || speaking) return;
+  const bin = atob(m.pcm), i16 = new Int16Array(bin.length / 2);
+  for (let i = 0; i < i16.length; i++) i16[i] = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+  const f = toFloat(i16), b = actx.createBuffer(1, f.length, m.sr); b.copyToChannel(f, 0);
+  const s = actx.createBufferSource(); s.buffer = b; const g = actx.createGain(); g.gain.value = .8;
+  s.connect(g); g.connect(outGain); s.start();
+  bcDur = b.duration; bcUntil = actx.currentTime + b.duration + .3;     // its echo must not count as the user
+}
+function stopAudio() { for (const s of sources) { try { s.stop(); } catch (e) {} } sources = []; nextT = 0; }
+function maybeIdle() {
+  if (!turnDone || sources.length) return;
+  speaking = false;
+  if (running) { orb.state = "listen"; setStatus("Dinliyorum…");
+    setTimeout(() => { if (running && !speaking && vadInst) vadInst.start(); }, 300); }
+  else { orb.state = "idle"; setStatus("Durdu", "devam etmek için küreye dokunun"); }
+}
+function interrupt() { dropAudio = true; stopAudio(); duck(false); send({type: "cancel"}); turnDone = true; speaking = false; }
+
+function sendUtterance(f32) {
+  const i16 = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) i16[i] = Math.max(-1, Math.min(1, f32[i])) * 32767;
+  send(i16.buffer);
+  orb.state = "think"; setStatus("…");
+}
+
+async function start() {
+  audioInit(); await actx.resume(); await outputInit();
+  if (!vadInst) {
+    setStatus("Mikrofon hazırlanıyor…");
+    vadInst = await vad.MicVAD.new({
+      model: "v5",
+      positiveSpeechThreshold: 0.62, negativeSpeechThreshold: 0.42,  // selective: room noise is not speech
+      redemptionMs: 350, preSpeechPadMs: 300, minSpeechMs: 450,      // pauses end a fragment; Smart Turn decides the turn
+      baseAssetPath: "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/",
+      onnxWASMBasePath: "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/",
+      getStream: async () => {
+        micStream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false}});
+        const src = actx.createMediaStreamSource(micStream); micAn = actx.createAnalyser(); micAn.fftSize = 1024; micBuf = new Float32Array(micAn.fftSize);
+        src.connect(micAn); return micStream;
+      },
+      pauseStream: async () => {}, resumeStream: async () => micStream,
+      startOnLoad: false,
+      onFrameProcessed: probs => { if (speaking && aecLoop) bargeFrame(probs.isSpeech); },
+      onSpeechStart: () => {
+        if (speaking) return;
+        send({type: "speech_start"}); orb.state = "user"; setStatus("Dinliyorum…");
+      },
+      onVADMisfire: () => { if (!speaking && running) { orb.state = "listen"; } },
+      onSpeechEnd: audio => {
+        if (speaking) return;
+        if (actx.currentTime < bcUntil && audio.length < (bcDur + .5) * 16000) return;   // echo of our "hı hı"
+        sendUtterance(audio);
+      },
+    });
+  }
+  vadInst.start(); running = true; orb.state = "listen";
+  $("orb").setAttribute("aria-label", "Sohbeti durdur"); setStatus("Dinliyorum…", "konuşmaya başlayın");
+}
+async function stop() {
+  running = false; if (vadInst) vadInst.pause(); interrupt(); orb.state = "idle";
+  $("orb").setAttribute("aria-label", "Sohbeti başlat"); setStatus("Durdu", "devam etmek için küreye dokunun");
+}
+$("orb").onclick = () => (running ? stop() : start().catch(e => setStatus("Başlatılamadı", String(e))));
+document.addEventListener("keydown", e => { if (e.code === "Space" && e.target === document.body) { e.preventDefault(); $("orb").click(); } });
+$("reset").onclick = () => { interrupt(); send({type: "reset"}); capU.textContent = capB.textContent = ""; toneEl.classList.remove("on");
+  if (running) { orb.state = "listen"; setStatus("Yeni sohbet", "dinliyorum…"); } };
+$("capBtn").onclick = e => { const on = e.currentTarget.getAttribute("aria-pressed") !== "true"; e.currentTarget.setAttribute("aria-pressed", on); $("cap").classList.toggle("off", !on); };
+modeSel.onchange = () => send({type: "mode", mode: modeSel.value});
+connect();
+</script></body></html>

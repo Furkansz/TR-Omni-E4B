@@ -1,0 +1,12 @@
+torch>=2.8
+transformers>=5.17
+voxcpm==2.0.3
+fastapi
+uvicorn[standard]
+requests
+numpy
+soundfile
+librosa
+onnxruntime
+huggingface_hub
+pillow
