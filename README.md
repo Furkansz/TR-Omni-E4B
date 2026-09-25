@@ -2,7 +2,7 @@
 
 This repository contains the browser interface and streaming server for [TR-Omni-E4B](https://huggingface.co/furkanbekmezci/TR-Omni-E4B-Turkish-Native-Speech-to-Speech-Model), a Turkish native speech-to-speech model. The model weights, model card and offline inference code are on Hugging Face.
 
-The GitHub page is the source repository. Start the server on a machine with an NVIDIA GPU, then open its local address in your browser. You can use the same computer for both, or connect your laptop to a remote GPU over SSH.
+Start the server on a machine with an NVIDIA GPU, then open its local address in your browser. You can use the same computer for both, or connect your laptop to a remote GPU over SSH.
 
 > **Türkçe:** Bu depo tarayıcıdaki canlı sohbet uygulamasının kodunu içerir. Model Hugging Face'ten indirilir; sunucuyu çalıştırdıktan sonra arayüze tarayıcınızda `http://localhost:7860` adresinden girersiniz.
 
@@ -24,7 +24,7 @@ pip install -r requirements.txt
 python live/server.py
 ```
 
-Wait for the `ready` message, then open **http://localhost:7860** in Chrome and allow microphone access. Click the orb to start or stop listening. The first launch downloads the model and compiles CUDA graphs, so it takes a few minutes. If the model is already on disk, pass its directory instead:
+Wait for the `ready` message, then open **http://localhost:7860** in Chrome and allow microphone access. Click the orb to start or stop listening. The first launch downloads the model (about 21 GB), which can take a while depending on your connection; every start also compiles CUDA graphs, which takes a few minutes. If the model is already on disk, pass its directory instead:
 
 ```bash
 python live/server.py --model /path/to/TR-Omni-E4B
@@ -38,7 +38,7 @@ Run `python live/server.py` on the GPU server. On the computer with your microph
 ssh -N -L 7860:127.0.0.1:7860 user@gpu-server
 ```
 
-Keep that SSH connection open and visit **http://localhost:7860** on your computer. The address refers to the forwarded server, not to a website hosted by GitHub. Browsers allow microphone access on `localhost`; for access through a public domain, serve the app over HTTPS with WebSocket support. The server has no authentication, so do not expose it publicly without adding access control.
+Keep that SSH connection open and visit **http://localhost:7860** on your computer. Browsers allow microphone access on `localhost`; for access through a public domain, serve the app over HTTPS with WebSocket support. The server has no authentication, so do not expose it publicly without adding access control.
 
 ## How the live app works
 
