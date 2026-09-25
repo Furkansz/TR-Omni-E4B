@@ -40,8 +40,21 @@ python live/server.py                          # downloads the model (~21 GB) on
 # or: python live/server.py --model /path/to/TR-Omni-E4B
 ```
 
-Open **http://localhost:7860** and click the orb. The first start compiles CUDA graphs and takes a few minutes. On a
-remote GPU machine, forward the port first: `ssh -L 7860:localhost:7860 user@gpu-host`.
+The first start compiles CUDA graphs and takes a few minutes. When the server prints `ready`, open the address it
+shows (by default `http://localhost:7860`) in Chrome and click the orb. The app runs entirely on your own hardware;
+audio is not sent to any external service.
+
+### Running on a remote GPU server
+
+Browsers grant microphone access only to pages served over HTTPS or from `localhost`. The simplest setup is to
+forward the port over SSH and open `http://localhost:7860` on your own computer:
+
+```bash
+ssh -N -L 7860:localhost:7860 user@gpu-server
+```
+
+Alternatively, start the server with `--host 0.0.0.0` behind an HTTPS reverse proxy with WebSocket support (the page
+switches to `wss://` by itself). The app has no authentication, so do not expose it to the internet as is.
 
 ## How it works
 
@@ -57,7 +70,8 @@ browser ── VAD fragments ──► live/server.py ── Smart Turn v3.2 ─
 browser ◄── audio chunks + captions ──┘   (played through a WebRTC loopback: echo cancellation, barge-in)
 ```
 
-The voice server runs in its own process, started by `live/server.py`. Both servers listen on `127.0.0.1` only.
+The voice server runs in its own process, started by `live/server.py`, and listens on `127.0.0.1` only; the web
+server does too unless `--host` says otherwise.
 
 ## Performance notes
 
