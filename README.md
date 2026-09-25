@@ -1,108 +1,62 @@
-# TR-Omni-E4B — live speech-to-speech demo
+# TR-Omni-E4B live demo
 
-Real-time voice conversation in the browser with **[TR-Omni-E4B](https://huggingface.co/furkanbekmezci/TR-Omni-E4B-Turkish-Native-Speech-to-Speech-Model)**,
-a two-component (thinker–talker) Turkish speech-to-speech model. The model weights, the model card and a minimal
-offline inference script are on the Hugging Face Hub; this repository contains the live, streaming application.
+This repository contains the browser interface and streaming server for [TR-Omni-E4B](https://huggingface.co/furkanbekmezci/TR-Omni-E4B-Turkish-Native-Speech-to-Speech-Model), a Turkish native speech-to-speech model. The model weights, model card and offline inference code are on Hugging Face.
 
-> **Türkçe —** Bu depo, TR-Omni-E4B ile tarayıcıdan canlı sesli sohbet için gereken uygulamayı içerir: cümle cümle
-> akışlı konuşma, Smart Turn ile konuşma sırası algılama, kısa geri bildirimler ("hı hı") ve yankı engellemeli söz kesme.
-> Model ağırlıkları Hugging Face'tedir; uygulama ilk çalıştırmada modeli otomatik indirir.
+The GitHub page is the source repository. Start the server on a machine with an NVIDIA GPU, then open its local address in your browser. You can use the same computer for both, or connect your laptop to a remote GPU over SSH.
 
-## Features
-
-- **Sentence-level streaming.** The thinker writes the reply token by token; each sentence is voiced as soon as it
-  is complete. On one 2g MIG slice of an H200 the first audio arrives about 0.7 s after the end of the user's turn
-  is detected (median over 20 spoken questions, server side; the page itself waits for 350 ms of silence).
-- **Turn-taking.** The browser segments speech with a VAD; [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3)
-  decides whether the user has finished, with graded waiting times and occasional short backchannels.
-- **Barge-in.** The user can interrupt at any time. The assistant's voice is played through a local WebRTC loopback
-  into an `<audio>` element, so Chrome's echo canceller uses it as its reference and the model does not hear itself.
-  The voice ducks when speech starts and stops after a sustained stretch of speech; short acknowledgements and
-  noise let it continue. The conversation history keeps only the sentences the user heard.
-- **Fast talker conditioning.** The thinker's hidden states for each sentence are computed on top of a per-turn KV
-  cache of the context, on a separate CUDA stream, so they do not queue behind the decoder.
-- **Turkish reading rules.** Numbers, ordinals (also Roman), dates, units, abbreviations and formulas are spoken
-  correctly (`tr_speak.py` from the model repository).
+> **Türkçe:** Bu depo tarayıcıdaki canlı sohbet uygulamasının kodunu içerir. Model Hugging Face'ten indirilir; sunucuyu çalıştırdıktan sonra arayüze tarayıcınızda `http://localhost:7860` adresinden girersiniz.
 
 ## Requirements
 
-- Linux with an NVIDIA GPU and about 17 GB of free GPU memory (24 GB recommended)
-- Python 3.10–3.12, CUDA-enabled PyTorch 2.8 or newer
-- Chrome (or another Chromium browser) for the web page; a microphone and speakers or headphones
+- Linux with an NVIDIA GPU; about 17 GB of free GPU memory is needed, and 24 GB gives more headroom.
+- Python 3.10–3.12 with a CUDA-enabled PyTorch installation (2.8 or newer).
+- Chrome or another Chromium browser, plus a microphone. Headphones help avoid echo.
+- Space for the model download: about 21 GB on first run.
 
-## Quickstart
+## Run it
 
 ```bash
 git clone https://github.com/Furkansz/TR-Omni-E4B.git
 cd TR-Omni-E4B
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python live/server.py                          # downloads the model (~21 GB) on the first run
-# or: python live/server.py --model /path/to/TR-Omni-E4B
+python live/server.py
 ```
 
-The first start compiles CUDA graphs and takes a few minutes. When the server prints `ready`, open the address it
-shows (by default `http://localhost:7860`) in Chrome and click the orb. The app runs entirely on your own hardware;
-audio is not sent to any external service.
-
-### Running on a remote GPU server
-
-Browsers grant microphone access only to pages served over HTTPS or from `localhost`. The simplest setup is to
-forward the port over SSH and open `http://localhost:7860` on your own computer:
+Wait for the `ready` message, then open **http://localhost:7860** in Chrome and allow microphone access. Click the orb to start or stop listening. The first launch downloads the model and compiles CUDA graphs, so it takes a few minutes. If the model is already on disk, pass its directory instead:
 
 ```bash
-ssh -N -L 7860:localhost:7860 user@gpu-server
+python live/server.py --model /path/to/TR-Omni-E4B
 ```
 
-Alternatively, start the server with `--host 0.0.0.0` behind an HTTPS reverse proxy with WebSocket support (the page
-switches to `wss://` by itself). The app has no authentication, so do not expose it to the internet as is.
+### GPU on another machine
 
-## How it works
+Run `python live/server.py` on the GPU server. On the computer with your microphone, forward the port over SSH:
 
-```
-browser ── VAD fragments ──► live/server.py ── Smart Turn v3.2 ──► end of turn?
-                                  │
-                                  ├─ thinker (Gemma 4 E4B, speech-adapted): streamed reply, one CUDA graph per token
-                                  ├─ per sentence: spoken form (tr_speak) → hidden states in context
-                                  │   (cached context, side CUDA stream)
-                                  ▼
-                          live/voice_server.py: talker (VoxCPM2 / Trendyol-TTS) → 48 kHz PCM, streamed
-                                  │
-browser ◄── audio chunks + captions ──┘   (played through a WebRTC loopback: echo cancellation, barge-in)
+```bash
+ssh -N -L 7860:127.0.0.1:7860 user@gpu-server
 ```
 
-The voice server runs in its own process, started by `live/server.py`, and listens on `127.0.0.1` only; the web
-server does too unless `--host` says otherwise.
+Keep that SSH connection open and visit **http://localhost:7860** on your computer. The address refers to the forwarded server, not to a website hosted by GitHub. Browsers allow microphone access on `localhost`; for access through a public domain, serve the app over HTTPS with WebSocket support. The server has no authentication, so do not expose it publicly without adding access control.
 
-## Performance notes
+## How the live app works
 
-- The talker runs on one long-lived thread: `torch.compile` records its CUDA graphs per thread, so a thread per
-  request would record them again for every sentence (about 0.2 s).
-- cuDNN attention is disabled in both processes. It builds a new plan for every new sequence length, which means
-  almost every sentence (about 0.1 s each); flash and memory-efficient attention compute the same without that cost.
-- Together these took the median first-audio latency on the 20-question set from 0.93 s to 0.73 s, with the same
-  replies and no loss in intelligibility (Whisper WER of the spoken replies 3.7 % → 2.8 %, within sampling noise).
+The browser detects speech and sends audio to `live/server.py`. Smart Turn v3.2 decides whether a pause ends the user's turn. The thinker answers the audio directly; as it finishes each sentence, the server prepares its spoken form and extracts the thinker's contextual hidden states. `live/voice_server.py` feeds those states and the response tokens to the talker, then streams 48 kHz audio back to the browser.
 
-## Tuning
+The browser plays audio through a local WebRTC loopback so Chrome's echo canceller can use it as a reference. This enables barge-in: when the user starts speaking, playback ducks and a sustained interruption stops the response. Short pauses in a longer user turn can trigger a brief backchannel before the assistant answers.
 
-- Barge-in: `BARGE` in `live/web/index.html` (speech probability 0.85, duck after 200 ms, stop after 650 ms).
-- End of speech in the browser: `redemptionMs` (350 ms) in `live/web/index.html`.
-- Turn-taking: `P_NOW`, `P_SHORT`, `HOLD_SHORT`, `HOLD_MAX` and the backchannel settings in `live/server.py`.
+In a 20-question test on an H200 2g MIG slice, the median time from detected end of turn to first audio was **0.73 s**, measured on the server. The browser's 350 ms silence window, network delay and playback are outside that measurement. Expect different latency on other hardware.
 
-## Limitations
+## Configuration and limits
 
-- One conversation at a time per server (one GPU).
-- Echo cancellation and barge-in are tuned for Chrome; other browsers may behave differently. Headphones avoid echo
-  altogether.
-- The model's own limitations (knowledge, a single synthetic voice) are described in the
-  [model card](https://huggingface.co/furkanbekmezci/TR-Omni-E4B-Turkish-Native-Speech-to-Speech-Model).
+- `python live/server.py --help` lists server options, including `--model`, `--host`, `--port` and `--no-smart-turn`.
+- Turn-taking thresholds are near the top of [`live/server.py`](live/server.py); the browser's silence and barge-in settings are in [`live/web/index.html`](live/web/index.html).
+- The server handles one conversation at a time. Echo cancellation and barge-in are tuned for Chrome; other browsers may behave differently.
+- The application sends microphone audio to the GPU server you run. It does not send audio to a third-party speech API. The browser loads VAD and ONNX runtime assets from jsDelivr; the model and Smart Turn weights are downloaded from Hugging Face on first use.
 
-## Responsible use
-
-The assistant voice is synthetic. Do not use the model to impersonate real people, for fraud or for disinformation,
-and label generated speech as AI-generated.
+For model evaluation, limitations and voice-use guidance, see the [model card](https://huggingface.co/furkanbekmezci/TR-Omni-E4B-Turkish-Native-Speech-to-Speech-Model).
 
 ## License
 
-Apache-2.0 (`LICENSE`). Third-party components loaded at runtime: Smart Turn v3 (BSD-2-Clause, downloaded from the
-Hugging Face Hub), [@ricky0123/vad-web](https://github.com/ricky0123/vad) (ISC) and onnxruntime-web (MIT), both from
-jsDelivr. See the model card for the licenses of the model and its training data.
+Apache-2.0; see [`LICENSE`](LICENSE). Runtime components include [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) (BSD-2-Clause), [@ricky0123/vad-web](https://github.com/ricky0123/vad) (ISC) and onnxruntime-web (MIT). The model card covers the model's components and training data.
